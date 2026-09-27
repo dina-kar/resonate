@@ -135,6 +135,25 @@ struct DbArgs {
     /// Leave the fresh databases in place after the run, for inspection.
     #[arg(long)]
     keep_db: bool,
+    /// Loam: the store behind the blob backend, as a spec
+    /// (`tikv://<pd>[?mode=optimistic]`, `redb:<path>`). Unset, blob runs on
+    /// the in-process store as upstream does. Set, the blob legs build with
+    /// the `tikv` and `redb` features and every run works under a fresh key
+    /// prefix, so a shared TiKV is vanilla per run.
+    #[arg(long, env = "XTASK_BLOB_STORE")]
+    blob_store: Option<String>,
+}
+
+/// A fresh, unique key prefix for one run against a shared store.
+fn fresh_prefix(purpose: &str) -> String {
+    format!(
+        "xtask-{purpose}-{}-{}/",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    )
 }
 
 #[derive(Args, Clone)]
@@ -173,6 +192,17 @@ fn core() -> PathBuf {
         .parent()
         .expect("xtask lives one level under the workspace")
         .to_path_buf()
+}
+
+/// Where `cargo build --release` puts binaries: `$CARGO_TARGET_DIR/release`
+/// when the variable is set (Loam builds share a target directory), else the
+/// workspace's own `target/release`.
+fn release_dir() -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .map(|d| if d.is_absolute() { d } else { core().join(d) })
+        .unwrap_or_else(|| core().join("target"))
+        .join("release")
 }
 
 fn cargo() -> Command {
@@ -473,6 +503,29 @@ fn with_seed(cmd: &mut Command, seed: Option<u64>) -> &mut Command {
 
 async fn one_differential(backend: Backend, seed: Option<u64>, db: &DbArgs) -> Result<()> {
     if backend == Backend::Blob {
+        if let Some(store) = &db.blob_store {
+            // Loam: blob's own differential over the named store. The port
+            // differential is store-independent (it runs blob in memory), so
+            // it is not repeated here.
+            let mut cmd = cargo();
+            cmd.args([
+                "test",
+                "--release",
+                "-p",
+                "resonate-server-blob",
+                "--features",
+                "tikv,redb",
+                "--test",
+                "differential",
+                "--",
+                "--nocapture",
+            ])
+            .env("TEST_BLOB_STORE", store);
+            return run(
+                &format!("blob differential over {store}"),
+                with_seed(&mut cmd, seed),
+            );
+        }
         // The engine port is the SQL family's; blob has its own differential,
         // against its in-crate model, and is in every port differential —
         // the one below is the oracle, SQLite and blob.
@@ -618,22 +671,27 @@ async fn porcupine(backend: Backend, db: &DbArgs, porc: &PorcArgs) -> Result<()>
     if Command::new("go").arg("version").output().is_err() {
         return Err("the linearizability check needs `go` on PATH".into());
     }
+    let mut build = cargo();
+    build.args([
+        "build",
+        "--release",
+        "--bin",
+        "resonate",
+        "--example",
+        "conctrace",
+    ]);
+    if backend == Backend::Blob && db.blob_store.is_some() {
+        build.args(["--features", "tikv,redb"]);
+    }
     run(
         "cargo build --release --bin resonate --example conctrace",
-        cargo().args([
-            "build",
-            "--release",
-            "--bin",
-            "resonate",
-            "--example",
-            "conctrace",
-        ]),
+        &mut build,
     )?;
     let porc = porc.clone();
     with_fresh_db(backend, db, "porcupine", move |url| {
         let dir = scratch("porcupine")?;
         let port = free_port()?;
-        let mut server = Command::new(core().join("target/release/resonate"));
+        let mut server = Command::new(release_dir().join("resonate"));
         server
             .arg("serve")
             .current_dir(&dir)
@@ -682,6 +740,13 @@ async fn porcupine(backend: Backend, db: &DbArgs, porc: &PorcArgs) -> Result<()>
                 // No bucket: the in-process object store, fresh with the
                 // process, with real conditional-write semantics.
                 server.env("RESONATE_SERVERS__ACTIVE", "server_blob");
+                if let Some(store) = &db.blob_store {
+                    let prefix = fresh_prefix("porcupine");
+                    eprintln!("==> blob store {store}, prefix {prefix}");
+                    server
+                        .env("RESONATE_SERVERS__SERVER_BLOB__STORE", store)
+                        .env("RESONATE_SERVERS__SERVER_BLOB__PREFIX", prefix);
+                }
             }
             Backend::Sqlite => {
                 server.env("RESONATE_SERVERS__ACTIVE", "server_sqlite").env(
@@ -707,7 +772,7 @@ async fn porcupine(backend: Backend, db: &DbArgs, porc: &PorcArgs) -> Result<()>
         // to be concurrent, fails here rather than linearizing vacuously.
         run(
             "conctrace",
-            Command::new(core().join("target/release/examples/conctrace"))
+            Command::new(release_dir().join("examples/conctrace"))
                 .current_dir(&dir)
                 .args([
                     "--url",
