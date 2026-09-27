@@ -61,11 +61,30 @@ fn now_ms() -> i64 {
 }
 
 impl Bridge {
+    /// Start the workflow, retrying transient failures in place (a Resonate
+    /// pod restarting, a TiKV lock left by a killed transaction) for up to
+    /// ~30 s before handing the trigger back to Dapr for redelivery. Dapr's
+    /// Redis pub/sub drops a message after `maxRetries` (3 by default), so a
+    /// short outage would otherwise lose triggers. Retrying is safe: the
+    /// promise id is fixed, so a retry that races a landed create is a no-op.
     async fn start(&self, t: Trigger) -> Result<Started, StartError> {
-        let r = self
-            .resonate
-            .start(&t, &self.target, now_ms(), self.ttl_ms)
-            .await;
+        let mut delay = std::time::Duration::from_millis(250);
+        let mut attempt = 0;
+        let r = loop {
+            attempt += 1;
+            let r = self
+                .resonate
+                .start(&t, &self.target, now_ms(), self.ttl_ms)
+                .await;
+            match &r {
+                Err(StartError::Retry(e)) if attempt < 8 => {
+                    warn!(source = %t.source, key = %t.key, attempt, error = %e, "retrying start");
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(std::time::Duration::from_secs(8));
+                }
+                _ => break r,
+            }
+        };
         match &r {
             Ok(s) => {
                 info!(source = %t.source, key = %t.key, promise = %t.promise_id(), outcome = ?s, "trigger")
@@ -107,7 +126,7 @@ impl AppCallback for Bridge {
                 data: Some(prost_types::Any {
                     type_url: String::new(),
                     value: serde_json::to_vec(
-                        &serde_json::json!({"promise": id, "created": s == Started::Created}),
+                        &serde_json::json!({"promise": id, "accepted": s == Started::Accepted}),
                     )
                     .unwrap(),
                 }),

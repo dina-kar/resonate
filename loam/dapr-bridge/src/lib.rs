@@ -61,10 +61,8 @@ pub fn content_key(parts: &[&[u8]]) -> String {
 /// What happened to a start request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Started {
-    /// A new workflow promise was created.
-    Created,
-    /// The promise existed already: a duplicate delivery.
-    Existing,
+    /// The workflow promise exists (created now, or by an earlier delivery).
+    Accepted,
 }
 
 /// Why a start failed.
@@ -154,10 +152,11 @@ impl Resonate {
             )
             .await
             .map_err(StartError::Retry)?;
+        // Resonate answers 200 whether the promise was created now or
+        // existed (create is idempotent), so the two are not told apart here;
+        // exactly-once rests on the id, not on this status.
         match status {
-            200 => Ok(Started::Existing),
-            201 => Ok(Started::Created),
-            409 => Ok(Started::Existing),
+            200 | 201 | 409 => Ok(Started::Accepted),
             429 | 500..=599 => Err(StartError::Retry(format!("{status}: {body}"))),
             _ => Err(StartError::Drop(format!("{status}: {body}"))),
         }

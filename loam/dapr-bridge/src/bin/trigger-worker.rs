@@ -23,6 +23,8 @@ use tokio::sync::Mutex;
 struct Counts {
     executions: BTreeMap<String, u64>,
     duplicate_messages: u64,
+    fulfilled: u64,
+    fulfill_failures: u64,
 }
 
 #[derive(Clone)]
@@ -74,15 +76,40 @@ async fn execute(State(app): State<App>, Json(msg): Json<Value>) -> Json<Value> 
                 *c.executions.entry(id.clone()).or_default() += 1;
             }
             // The workflow body would run here. Settle the promise.
-            let done = r
-                .call(
-                    "task.fulfill",
-                    json!({"id": id, "version": version, "action": {
-                        "kind": "promise.settle", "head": {},
-                        "data": {"id": id, "state": "resolved", "value": {"headers": {}, "data": ""}}}}),
-                )
-                .await;
-            Json(json!({"executed": id, "fulfill": done.map(|(s, _)| s).unwrap_or(0)}))
+            // `task.acquire` bumps the task version: fulfill must name the
+            // acquired version (message version + 1), or it is refused with
+            // 409 and the task is re-dispatched when its lease lapses.
+            // Retry transient failures (a Resonate pod going away mid-call):
+            // a completion that is never recorded makes Resonate re-dispatch
+            // the task after its lease, which is at-least-once execution.
+            // 409 means the task moved on (already fulfilled, or lease lost).
+            let mut status = 0;
+            let mut delay = std::time::Duration::from_millis(250);
+            for _ in 0..8 {
+                let done = r
+                    .call(
+                        "task.fulfill",
+                        json!({"id": id, "version": version + 1, "action": {
+                            "kind": "promise.settle", "head": {},
+                            "data": {"id": id, "state": "resolved", "value": {"headers": {}, "data": ""}}}}),
+                    )
+                    .await;
+                status = done.as_ref().map(|(s, _)| *s).unwrap_or(0);
+                if status == 200 || status == 409 {
+                    break;
+                }
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(std::time::Duration::from_secs(8));
+            }
+            {
+                let mut c = app.counts.lock().await;
+                if status == 200 {
+                    c.fulfilled += 1;
+                } else {
+                    c.fulfill_failures += 1;
+                }
+            }
+            Json(json!({"executed": id, "fulfill": status}))
         }
         Ok((status, _)) => {
             // Already acquired or finished: a redelivered message, not a new
@@ -103,6 +130,8 @@ async fn executions(State(app): State<App>) -> Json<Value> {
         "executions": total,
         "max_per_promise": max,
         "duplicate_messages": c.duplicate_messages,
+        "fulfilled": c.fulfilled,
+        "fulfill_failures": c.fulfill_failures,
         "by_promise": c.executions,
     }))
 }
