@@ -68,6 +68,10 @@ path = "diff/port.rs"
 #
 # See "Build a server with the plugins you want" in the README for the shape a
 # smaller build takes: ten lines of `main`, and only what it names is compiled.
+# Loam: the blob server over TiKV (the loam tikv-client fork) and over a
+# local redb file. Off by default; the Loam validation builds turn them on.
+tikv = ["resonate-server-blob/tikv"]
+redb = ["resonate-server-blob/redb"]
 concurrency-stress = [
     "resonate-server-sqlite/concurrency-stress",
     "resonate-server-mysql/concurrency-stress",

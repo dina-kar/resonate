@@ -22,6 +22,7 @@
 //! section and the deferred `init` live.
 
 pub mod applier;
+pub mod backends;
 pub mod cache;
 pub mod codec;
 pub mod kernel;
@@ -33,6 +34,10 @@ pub mod schedules;
 pub mod sender;
 pub mod server;
 pub mod store;
+#[cfg(feature = "redb")]
+pub mod store_redb;
+#[cfg(feature = "tikv")]
+pub mod store_tikv;
 pub mod timer_queue;
 pub mod timerd;
 

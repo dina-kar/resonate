@@ -19,3 +19,12 @@ chrono = "0.4"
 lazy_static = "1"
 futures = "0.3"
 fastrand = "2"
+# Loam: TiKV through the loam fork of tikv-client (TSO reconnect, public
+# protos, async-commit lock fixes), pinned by rev. Apache-2.0.
+tikv-client = { git = "https://github.com/dina-kar/client-rust", rev = "1f8962b", default-features = false, optional = true }
+# Loam: the durable single-process dev store. MIT OR Apache-2.0.
+redb = { version = "3", optional = true }
+
+[features]
+tikv = ["dep:tikv-client"]
+redb = ["dep:redb"]

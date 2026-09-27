@@ -109,11 +109,32 @@ fn pick<T: Clone>(rng: &mut fastrand::Rng, v: &[T]) -> Option<T> {
 async fn differential_random() {
     debug_assert_eq!(22, ALL_OPS.len(), "Op has 22 variants; ALL_OPS must match");
 
-    let server = Server::in_memory(ServerCfg {
-        debug: true,
-        search: true,
-        ..Default::default()
-    });
+    // Loam: `TEST_BLOB_STORE` points the blob leg at another store
+    // (`redb:<path>`, `tikv://<pd>`); each run works under a prefix of its own.
+    let server = match std::env::var("TEST_BLOB_STORE") {
+        Ok(spec) if !spec.is_empty() && spec != "memory" => {
+            let store = resonate_server_blob::backends::open(&spec)
+                .await
+                .expect("TEST_BLOB_STORE");
+            let prefix = format!("diff-{:016x}/", fastrand::u64(..));
+            eprintln!("[differential] store={spec} prefix={prefix}");
+            Server::build(
+                store,
+                Arc::new(resonate_server_blob::sender::NullRouter),
+                ServerCfg {
+                    keys: resonate_server_blob::applier::KeySpace::new(prefix, 4),
+                    debug: true,
+                    search: true,
+                    ..Default::default()
+                },
+            )
+        }
+        _ => Server::in_memory(ServerCfg {
+            debug: true,
+            search: true,
+            ..Default::default()
+        }),
+    };
     let oracle = Arc::new(SharedOracle::with_preload_limit(PRELOAD_LIMIT));
 
     let backends: Vec<(String, Backend)> = vec![

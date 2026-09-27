@@ -47,6 +47,13 @@ fn configure(
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Loam: a store other than S3, as a one-line spec (see
+    /// [`backends`](crate::backends)): `memory`, `redb:<path>` or
+    /// `tikv://<pd>[,<pd>…][/<namespace>][?mode=…&keyspace=…]`. When set, it
+    /// wins over `bucket`.
+    #[serde(default)]
+    pub store: Option<String>,
+
     /// Bucket holding every object. When unset the backend runs against an
     /// in-process, in-memory store — nothing survives the process. That is a
     /// test and development mode, and startup says so loudly.
@@ -101,6 +108,12 @@ pub struct Config {
     #[serde(default)]
     pub server_url: String,
 
+    /// Loam: read the store on every request instead of answering unchanged
+    /// reads from the in-process cache. Turn on when more than one server
+    /// shares the store (see `ApplierCfg::read_through`).
+    #[serde(default)]
+    pub read_through: bool,
+
     /// How long a task may be held before it is handed to someone else.
     #[serde(default = "default_retry_timeout")]
     pub retry_timeout: i64,
@@ -125,6 +138,7 @@ fn default_retry_timeout() -> i64 {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            store: None,
             bucket: None,
             region: None,
             endpoint: None,
@@ -137,6 +151,7 @@ impl Default for Config {
             search_enabled: false,
             server_url: String::new(),
             retry_timeout: default_retry_timeout(),
+            read_through: false,
         }
     }
 }
@@ -178,7 +193,13 @@ impl BlobServer {
     }
 
     /// The bucket, or the in-memory stand-in when none is named.
-    fn open_store(&self) -> Result<Arc<dyn Store>, Unavailable> {
+    async fn open_store(&self) -> Result<Arc<dyn Store>, Unavailable> {
+        if let Some(spec) = &self.config.store {
+            tracing::info!(store = %spec, prefix = %self.config.prefix, "Using the blob server over a non-S3 store");
+            return crate::backends::open(spec)
+                .await
+                .map_err(|e| Unavailable::new(format!("cannot open store {spec}: {e}")));
+        }
         let Some(bucket) = &self.config.bucket else {
             tracing::warn!(
                 "servers.server_blob.bucket is not set — using an in-process, \
@@ -220,7 +241,7 @@ impl BlobServer {
 impl ResonateServer for BlobServer {
     /// Open the store, build the server, and start the timer loop.
     async fn init(&self, debug: bool) -> Result<(), Unavailable> {
-        let store = self.open_store()?;
+        let store = self.open_store().await?;
         let server = Server::build(
             store,
             Arc::clone(&self.router),
@@ -228,6 +249,7 @@ impl ResonateServer for BlobServer {
                 keys: KeySpace::new(self.config.prefix.clone(), self.config.timer_shards),
                 applier: ApplierCfg {
                     max_cas_retries: self.config.max_cas_retries,
+                    read_through: self.config.read_through,
                     kernel: KernelCfg {
                         retry_timeout: self.config.retry_timeout,
                         preload_limit: self.config.preload_limit,

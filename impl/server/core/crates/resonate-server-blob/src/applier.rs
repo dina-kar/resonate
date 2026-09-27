@@ -267,6 +267,12 @@ pub struct ApplierCfg {
     /// Mailbox depth. Deeper means larger group commits under load.
     pub mailbox: usize,
     pub kernel: KernelCfg,
+    /// Loam: never answer from the document cache; read the store on every
+    /// batch. Required when several servers share one store (Resonate
+    /// replicas over one TiKV): a read that changes nothing is otherwise
+    /// answered from this process's cache, which another replica's write may
+    /// have made stale. Writes are safe either way (they are conditional).
+    pub read_through: bool,
 }
 
 impl Default for ApplierCfg {
@@ -276,6 +282,7 @@ impl Default for ApplierCfg {
             idle_timeout: Duration::from_secs(60),
             mailbox: 256,
             kernel: KernelCfg::default(),
+            read_through: false,
         }
     }
 }
@@ -577,7 +584,12 @@ struct Loaded {
 }
 
 async fn load(origin: &str, shared: &Arc<Shared>) -> Result<Loaded, Unavailable> {
-    if let Some(cached) = shared.cache.get(origin) {
+    let cached = if shared.cfg.read_through {
+        None
+    } else {
+        shared.cache.get(origin)
+    };
+    if let Some(cached) = cached {
         return Ok(Loaded {
             doc: cached.doc.as_ref().clone(),
             etag: Some(cached.etag),
