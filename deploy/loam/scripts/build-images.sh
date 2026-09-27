@@ -24,7 +24,7 @@ build() { # name, binaries...
   cp "$ROOT/deploy/loam/images/Containerfile" "$CTX/Containerfile"
   podman build -q -t "localhost/loam/$name:tikv-dapr" "$CTX"
 }
-build resonate resonate
+build resonate resonate examples/conctrace
 build dapr-bridge resonate-dapr-bridge trigger-worker trigger-check
 
 if [ "${LOAD_KIND:-1}" = 1 ]; then

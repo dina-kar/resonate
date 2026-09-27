@@ -1,0 +1,64 @@
+# In-cluster linearizability: two Resonate replicas in debug mode (the
+# recorder drives the clock and resets state) over their own TiKV namespace,
+# and a recorder pod that runs conctrace against them, once through the
+# Kubernetes Service and once through Dapr service invocation. The histories
+# are copied out and checked with the spec's conccheck on the host.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: resonate-debug, namespace: loam }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: resonate-debug } }
+  template:
+    metadata:
+      labels: { app: resonate-debug }
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: resonate-debug
+        dapr.io/app-port: "8001"
+        dapr.io/app-protocol: http
+        dapr.io/config: loam
+        dapr.io/sidecar-memory-limit: 256Mi
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: resonate
+          image: localhost/loam/resonate:tikv-dapr
+          command: ["/usr/local/bin/resonate", "serve"]
+          env:
+            - { name: RESONATE_DEBUG, value: "true" }
+            - { name: RESONATE_SERVERS__ACTIVE, value: server_blob }
+            - { name: RESONATE_SERVERS__SERVER_BLOB__STORE, value: "tikv://pd-pd.loam.svc.cluster.local:2379/porcupine/" }
+            - { name: RESONATE_SERVERS__SERVER_BLOB__READ_THROUGH, value: "true" }
+            - { name: RESONATE_GATEWAYS__GATEWAY_HTTP__BIND, value: "0.0.0.0:8001" }
+            - { name: RESONATE_GATEWAYS__GATEWAY_METRICS__BIND, value: "0.0.0.0:9091" }
+          ports: [{ containerPort: 8001 }]
+          readinessProbe: { httpGet: { path: /ready, port: 8001 }, periodSeconds: 2 }
+          resources: { requests: { cpu: 100m, memory: 64Mi }, limits: { memory: 512Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: resonate-debug, namespace: loam }
+spec:
+  selector: { app: resonate-debug }
+  # No session affinity: connections spread over both replicas.
+  ports: [{ name: http, port: 8001 }]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: porc-recorder
+  namespace: loam
+  annotations:
+    dapr.io/enabled: "true"
+    dapr.io/app-id: porc-recorder
+    dapr.io/config: loam
+    dapr.io/sidecar-memory-limit: 256Mi
+spec:
+  restartPolicy: Never
+  enableServiceLinks: false
+  containers:
+    - name: rec
+      image: localhost/loam/resonate:tikv-dapr
+      command: ["sleep", "infinity"]
+      resources: { requests: { cpu: 100m, memory: 64Mi }, limits: { memory: 512Mi } }
