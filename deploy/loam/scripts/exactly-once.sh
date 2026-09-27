@@ -43,5 +43,10 @@ if [ "$KILL" != none ]; then
   echo "killing $victim"
   kubectl -n loam delete "$victim" --grace-period=0 --force >/dev/null 2>&1
 fi
-kubectl -n loam wait --for=condition=complete --for=condition=failed "job/$job" --timeout=700s >/dev/null || true
+# Poll: `kubectl wait` with two --for conditions waits for both.
+for _ in $(seq 1 700); do
+  st=$(kubectl -n loam get job "$job" -o jsonpath='{.status.succeeded}{.status.failed}')
+  [ -n "$st" ] && break
+  sleep 1
+done
 kubectl -n loam logs "job/$job" -c check | tail -1
