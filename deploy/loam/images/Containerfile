@@ -1,0 +1,9 @@
+# Runtime image for the host-built release binaries (resonate, resonate-dapr-bridge,
+# trigger-worker). The binaries are built on the host with the tikv feature and
+# copied in; `scripts/build-images.sh` checks that their glibc symbol versions
+# fit this base before building.
+FROM docker.io/library/debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY bin/ /usr/local/bin/
+USER 65532:65532
+ENTRYPOINT []

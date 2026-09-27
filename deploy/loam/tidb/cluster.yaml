@@ -1,0 +1,69 @@
+# Minimal TiKV for the validation, managed by TiDB Operator v2
+# (core.pingcap.com/v1alpha1): 1 PD, 1 TiKV, no TiDB, no TiFlash.
+# Resonate talks to TiKV's transactional API directly (tikv-client, loam fork);
+# there is no SQL layer.
+apiVersion: core.pingcap.com/v1alpha1
+kind: Cluster
+metadata:
+  name: loam
+  namespace: loam
+spec: {}
+---
+apiVersion: core.pingcap.com/v1alpha1
+kind: PDGroup
+metadata:
+  name: pd
+  namespace: loam
+  labels:
+    pingcap.com/group: pd
+    pingcap.com/component: pd
+    pingcap.com/cluster: loam
+spec:
+  cluster:
+    name: loam
+  replicas: 1
+  template:
+    spec:
+      version: v8.5.8
+      resources:
+        cpu: "1"
+        memory: 1Gi
+      volumes:
+        - name: data
+          mounts:
+            - type: data
+          storage: 2Gi
+---
+apiVersion: core.pingcap.com/v1alpha1
+kind: TiKVGroup
+metadata:
+  name: tikv
+  namespace: loam
+  labels:
+    pingcap.com/group: tikv
+    pingcap.com/component: tikv
+    pingcap.com/cluster: loam
+spec:
+  cluster:
+    name: loam
+  replicas: 1
+  template:
+    spec:
+      version: v8.5.8
+      resources:
+        cpu: "2"
+        memory: 3Gi
+      config: |
+        [storage]
+        reserve-space = "0MB"
+        [storage.block-cache]
+        capacity = "512MiB"
+        [rocksdb]
+        max-open-files = 4096
+        [raftdb]
+        max-open-files = 4096
+      volumes:
+        - name: data
+          mounts:
+            - type: data
+          storage: 5Gi

@@ -1,0 +1,44 @@
+# Dapr components for the validation. They live next to the bridge that
+# consumes them (loam/dapr-bridge), so the trigger definitions and the code
+# they start cannot drift apart.
+#
+# Hard constraint: no workflow backend component (`workflowbackend.*`) may ever
+# be defined here or anywhere in the namespace. The bridge refuses to start if
+# its sidecar reports one; Resonate is the only durability mechanism.
+---
+# External triggers: webhooks and AI-agent events are published here (through
+# any sidecar's publish API, or the Dapr HTTP publish endpoint), and the bridge
+# subscribes. Redis 7.2 is BSD-3-Clause (later Redis versions are not).
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: triggers
+  namespace: loam
+spec:
+  type: pubsub.redis
+  version: v1
+  metadata:
+    - name: redisHost
+      value: redis.loam.svc.cluster.local:6379
+    - name: redisPassword
+      value: ""
+    # Redeliver an un-acked message after 5 s: exercises at-least-once.
+    - name: processingTimeout
+      value: "5s"
+    - name: redeliverInterval
+      value: "2s"
+scopes:
+  - bridge
+  - trigger-publisher
+---
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: loam
+  namespace: loam
+spec:
+  tracing:
+    samplingRate: "1"
+    stdout: true
+  mtls:
+    enabled: true

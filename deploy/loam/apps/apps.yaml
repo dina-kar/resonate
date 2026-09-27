@@ -1,0 +1,136 @@
+# The separate-binaries mode: Resonate server pods, the Dapr bridge and a test
+# worker, each with a Dapr sidecar injected by annotation (Dapr's mutating
+# webhook), talking to each other only through Dapr service invocation.
+# TiKV + PD come from tidb/cluster.yaml (TiDB Operator v2).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: loam
+---
+# Pub/sub broker for the trigger component. Redis 7.2 (BSD-3-Clause).
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: redis, namespace: loam }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: redis } }
+  template:
+    metadata: { labels: { app: redis } }
+    spec:
+      containers:
+        - name: redis
+          image: docker.io/library/redis:7.2-bookworm
+          args: ["--save", "", "--appendonly", "no"]
+          ports: [{ containerPort: 6379 }]
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 256Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: redis, namespace: loam }
+spec:
+  selector: { app: redis }
+  ports: [{ port: 6379 }]
+---
+# Resonate: the blob server over TiKV (tikv-client, loam fork). Stateless;
+# scaled independently of TiKV (option 1 of the plan: plain pods, not managed
+# by the operator).
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: resonate, namespace: loam }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: resonate } }
+  template:
+    metadata:
+      labels: { app: resonate }
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: resonate
+        dapr.io/app-port: "8001"
+        dapr.io/app-protocol: http
+        dapr.io/config: loam
+        dapr.io/sidecar-memory-limit: 256Mi
+    spec:
+      containers:
+        - name: resonate
+          image: localhost/loam/resonate:tikv-dapr
+          args: ["serve"]
+          env:
+            - { name: RESONATE_SERVERS__ACTIVE, value: server_blob }
+            - { name: RESONATE_SERVERS__SERVER_BLOB__STORE, value: "tikv://pd-pd.loam.svc.cluster.local:2379/resonate/" }
+            - { name: RESONATE_GATEWAYS__GATEWAY_HTTP__BIND, value: "0.0.0.0:8001" }
+            - { name: RESONATE_GATEWAYS__GATEWAY_METRICS__BIND, value: "0.0.0.0:9090" }
+            - { name: RESONATE_DEBUG, value: "false" }
+            # More than one replica shares the store: never answer from the
+            # per-process cache (two-server porcupine is NOT linearizable
+            # without this; see the report).
+            - { name: RESONATE_SERVERS__SERVER_BLOB__READ_THROUGH, value: "true" }
+          ports: [{ containerPort: 8001 }, { containerPort: 9090 }]
+          readinessProbe: { httpGet: { path: /ready, port: 8001 }, periodSeconds: 2 }
+          resources: { requests: { cpu: 100m, memory: 64Mi }, limits: { memory: 512Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: resonate, namespace: loam }
+spec:
+  selector: { app: resonate }
+  ports: [{ name: http, port: 8001 }]
+---
+# The bridge: Dapr pub/sub, bindings and invocations in; idempotent Resonate
+# workflow starts out, through its sidecar to the `resonate` app.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: bridge, namespace: loam }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: bridge } }
+  template:
+    metadata:
+      labels: { app: bridge }
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: bridge
+        dapr.io/app-port: "50051"
+        dapr.io/app-protocol: grpc
+        dapr.io/config: loam
+        dapr.io/sidecar-memory-limit: 256Mi
+    spec:
+      containers:
+        - name: bridge
+          image: localhost/loam/dapr-bridge:tikv-dapr
+          command: ["/usr/local/bin/resonate-dapr-bridge"]
+          env:
+            - { name: BRIDGE_RESONATE_URL, value: "http://127.0.0.1:3500/" }
+            - { name: BRIDGE_RESONATE_APP_ID, value: resonate }
+            # Resonate pushes each execute message through *its own* sidecar
+            # to the worker app's `execute` method.
+            - { name: BRIDGE_TARGET, value: "http://127.0.0.1:3500/v1.0/invoke/worker/method/execute" }
+            - { name: BRIDGE_SUBSCRIPTIONS, value: "triggers:webhooks,triggers:agent-events" }
+          resources: { requests: { cpu: 50m, memory: 32Mi }, limits: { memory: 128Mi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: worker, namespace: loam }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: worker } }
+  template:
+    metadata:
+      labels: { app: worker }
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: worker
+        dapr.io/app-port: "8080"
+        dapr.io/app-protocol: http
+        dapr.io/config: loam
+        dapr.io/sidecar-memory-limit: 256Mi
+    spec:
+      containers:
+        - name: worker
+          image: localhost/loam/dapr-bridge:tikv-dapr
+          command: ["/usr/local/bin/trigger-worker"]
+          env:
+            - { name: WORKER_RESONATE_URL, value: "http://127.0.0.1:3500/" }
+            - { name: WORKER_RESONATE_APP_ID, value: resonate }
+          resources: { requests: { cpu: 50m, memory: 32Mi }, limits: { memory: 128Mi } }

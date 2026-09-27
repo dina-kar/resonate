@@ -1,0 +1,25 @@
+# Phase 0 exit test: duplicate triggers through Dapr must produce exactly one
+# Resonate workflow execution each. `kubectl -n loam logs job/trigger-check -c check`
+apiVersion: batch/v1
+kind: Job
+metadata: { name: trigger-check, namespace: loam }
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: trigger-publisher
+        dapr.io/config: loam
+        dapr.io/sidecar-memory-limit: 256Mi
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: check
+          image: localhost/loam/dapr-bridge:tikv-dapr
+          command: ["/usr/local/bin/trigger-check"]
+          env:
+            - { name: CHECK_EVENTS, value: "200" }
+            - { name: CHECK_DUPLICATES, value: "3" }
+            - { name: CHECK_INVOKES, value: "20" }
+            - { name: CHECK_SETTLE_SECS, value: "20" }
