@@ -13,7 +13,7 @@ trap 'rm -rf "$CTX"' EXIT
 (cd "$ROOT/loam/dapr-bridge" && CARGO_TARGET_DIR="$TARGET" cargo build --release --bins)
 
 max_glibc() { objdump -T "$1" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1; }
-for b in resonate resonate-dapr-bridge trigger-worker; do
+for b in resonate resonate-dapr-bridge trigger-worker trigger-check; do
   echo "$b needs $(max_glibc "$TARGET/release/$b") (debian trixie has GLIBC_2.41)"
 done
 
@@ -25,7 +25,7 @@ build() { # name, binaries...
   podman build -q -t "localhost/loam/$name:tikv-dapr" "$CTX"
 }
 build resonate resonate
-build dapr-bridge resonate-dapr-bridge trigger-worker
+build dapr-bridge resonate-dapr-bridge trigger-worker trigger-check
 
 if [ "${LOAD_KIND:-1}" = 1 ]; then
   export KIND_EXPERIMENTAL_PROVIDER=podman

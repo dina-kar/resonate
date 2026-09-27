@@ -9,7 +9,9 @@ DAPR_VERSION="${DAPR_VERSION:-1.18.4}"
 
 free -g | awk '/Mem:/ { if ($7 < 5) { print "less than 5 GiB available; refusing"; exit 1 } }'
 
-kind get clusters 2>/dev/null | grep -qx loam-rtd || kind create cluster --config "$HERE/kind/cluster.yaml"
+# Rootless podman: the shell may sit in a slice without the cpu controller;
+# a delegated user scope gets all of them (no sudo needed).
+kind get clusters 2>/dev/null | grep -qx loam-rtd || systemd-run --user --scope -p Delegate=yes env KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --config "$HERE/kind/cluster.yaml"
 kubectl config use-context kind-loam-rtd
 
 # TiDB Operator v2: CRDs, then the operator.

@@ -52,21 +52,25 @@ spec:
         dapr.io/config: loam
         dapr.io/sidecar-memory-limit: 256Mi
     spec:
+      # A Service named resonate makes Kubernetes inject RESONATE_SERVICE_HOST,
+      # RESONATE_PORT_8001_TCP and so on; Resonate reads every RESONATE_*
+      # variable as configuration and refuses unknown keys. No service links.
+      enableServiceLinks: false
       containers:
         - name: resonate
           image: localhost/loam/resonate:tikv-dapr
-          args: ["serve"]
+          command: ["/usr/local/bin/resonate", "serve"]
           env:
             - { name: RESONATE_SERVERS__ACTIVE, value: server_blob }
-            - { name: RESONATE_SERVERS__SERVER_BLOB__STORE, value: "tikv://pd-pd.loam.svc.cluster.local:2379/resonate/" }
+            - { name: RESONATE_SERVERS__SERVER_BLOB__STORE, value: "tikv://pd-pd.loam.svc.cluster.local:2379/resonate-v2/" }
             - { name: RESONATE_GATEWAYS__GATEWAY_HTTP__BIND, value: "0.0.0.0:8001" }
-            - { name: RESONATE_GATEWAYS__GATEWAY_METRICS__BIND, value: "0.0.0.0:9090" }
+            - { name: RESONATE_GATEWAYS__GATEWAY_METRICS__BIND, value: "0.0.0.0:9091" }  # daprd serves its metrics on 9090
             - { name: RESONATE_DEBUG, value: "false" }
             # More than one replica shares the store: never answer from the
             # per-process cache (two-server porcupine is NOT linearizable
             # without this; see the report).
             - { name: RESONATE_SERVERS__SERVER_BLOB__READ_THROUGH, value: "true" }
-          ports: [{ containerPort: 8001 }, { containerPort: 9090 }]
+          ports: [{ containerPort: 8001 }, { containerPort: 9091 }]
           readinessProbe: { httpGet: { path: /ready, port: 8001 }, periodSeconds: 2 }
           resources: { requests: { cpu: 100m, memory: 64Mi }, limits: { memory: 512Mi } }
 ---

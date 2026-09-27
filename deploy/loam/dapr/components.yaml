@@ -27,6 +27,13 @@ spec:
       value: "5s"
     - name: redeliverInterval
       value: "2s"
+    # The default, 3, drops a message after three failed deliveries; a short
+    # Resonate or TiKV outage then loses triggers (seen in the kill test).
+    # The resiliency policy below spaces the attempts out.
+    - name: maxRetries
+      value: "30"
+    - name: maxRetryBackoff
+      value: "10s"
 scopes:
   - bridge
   - trigger-publisher
@@ -40,5 +47,26 @@ spec:
   tracing:
     samplingRate: "1"
     stdout: true
-  mtls:
-    enabled: true
+# mTLS between sidecars is on cluster-wide (dapr-system/daprsystem, the
+# default); a per-namespace Configuration cannot turn it on or off.
+---
+# Inbound delivery to the bridge: back off exponentially, for up to ~5 min.
+apiVersion: dapr.io/v1alpha1
+kind: Resiliency
+metadata:
+  name: triggers
+  namespace: loam
+scopes:
+  - bridge
+spec:
+  policies:
+    retries:
+      triggerDelivery:
+        policy: exponential
+        maxInterval: 15s
+        maxRetries: 30
+  targets:
+    components:
+      triggers:
+        inbound:
+          retry: triggerDelivery

@@ -22,4 +22,4 @@ spec:
             - { name: CHECK_EVENTS, value: "200" }
             - { name: CHECK_DUPLICATES, value: "3" }
             - { name: CHECK_INVOKES, value: "20" }
-            - { name: CHECK_SETTLE_SECS, value: "20" }
+            - { name: CHECK_SETTLE_SECS, value: "90" }  # past one 60 s task lease
